@@ -64,14 +64,13 @@ Two implementation details matter for the gateway:
 - The running authorization endpoint accepts requests without the expiry fields marked as required by Swagger.
 - The bank caches successful responses by idempotency key and request path, but it does not compare request payloads or guarantee serialization of concurrent first requests.
 
-These findings are documented in [BANK_CONTRACT.md](./BANK_CONTRACT.md). The gateway will not rely on the bank's idempotency behavior as its only duplicate-request protection.
+The gateway will not rely on the bank's idempotency behavior as its only duplicate-request protection.
 
 ## Repository Structure
 
 ```text
 bank/                 supplied mock bank API and tests
 docker/               local bank and PostgreSQL environment
-BANK_CONTRACT.md      inspected and verified bank behavior
 README.md              current project status and setup
 ```
 
