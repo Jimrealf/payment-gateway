@@ -26,3 +26,13 @@ Thumbs.db
 *.key
 *.pem
 credentials.json
+
+# .NET
+**/bin/
+**/obj/
+TestResults/
+coverage/
+*.coverage
+*.coveragexml
+*.user
+*.suo

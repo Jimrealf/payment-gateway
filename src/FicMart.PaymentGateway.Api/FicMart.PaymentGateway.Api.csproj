@@ -1,0 +1,14 @@
+<Project Sdk="Microsoft.NET.Sdk.Web">
+
+  <ItemGroup>
+    <ProjectReference Include="..\FicMart.PaymentGateway.Domain\FicMart.PaymentGateway.Domain.csproj" />
+    <ProjectReference Include="..\FicMart.PaymentGateway.Infrastructure\FicMart.PaymentGateway.Infrastructure.csproj" />
+  </ItemGroup>
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+  </PropertyGroup>
+
+</Project>

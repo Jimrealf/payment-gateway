@@ -1,0 +1,10 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/FicMart.PaymentGateway.Api/FicMart.PaymentGateway.Api.csproj" />
+    <Project Path="src/FicMart.PaymentGateway.Domain/FicMart.PaymentGateway.Domain.csproj" />
+    <Project Path="src/FicMart.PaymentGateway.Infrastructure/FicMart.PaymentGateway.Infrastructure.csproj" />
+  </Folder>
+  <Folder Name="/tests/">
+    <Project Path="tests/FicMart.PaymentGateway.IntegrationTests/FicMart.PaymentGateway.IntegrationTests.csproj" />
+  </Folder>
+</Solution>

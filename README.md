@@ -6,9 +6,9 @@ The gateway will sit between FicMart and a supplied mock bank API. FicMart will 
 
 ## Status
 
-The project is in its initial build stage. The repository and mock bank are set up, the bank contract has been inspected and tested locally, and .NET 10 LTS has been selected for the gateway.
+The project is in its initial build stage. The repository and mock bank are set up, the bank contract has been inspected locally, and the .NET 10 solution now builds and runs.
 
-The C# gateway has not been scaffolded yet. The next step is to finish the minimum API, persistence, and testing decisions needed for the first authorization flow.
+The gateway currently exposes only a health endpoint. The next implementation slice will define and build the first authorization flow.
 
 ## Current Scope
 
@@ -52,8 +52,40 @@ docker compose -f docker/docker-compose.yaml down
 Run the supplied bank tests while the containers are running:
 
 ```bash
-docker compose -f docker/docker-compose.yaml exec bank-api go test ./...
+docker compose -f docker/docker-compose.yaml exec bank-api sh -c \
+  'go test -v $(go list ./... | grep -v /tests) && go test -v -count=1 -p 1 ./tests/...'
 ```
+
+## Build the Gateway
+
+Restore dependencies and build the solution:
+
+```bash
+dotnet restore FicMart.PaymentGateway.slnx
+dotnet build FicMart.PaymentGateway.slnx --no-restore
+```
+
+Run the tests:
+
+```bash
+dotnet test FicMart.PaymentGateway.slnx --no-build
+```
+
+Check formatting without changing files:
+
+```bash
+dotnet format FicMart.PaymentGateway.slnx --verify-no-changes
+```
+
+Run the gateway locally:
+
+```bash
+dotnet run --project src/FicMart.PaymentGateway.Api --urls http://localhost:5080
+```
+
+The health endpoint is available at <http://localhost:5080/health>.
+
+Local configuration keys are shown in [`.env.example`](./.env.example). Supply them as environment variables or through .NET user secrets; do not commit real credentials.
 
 ## Mock Bank Behavior
 
@@ -69,12 +101,15 @@ The gateway will not rely on the bank's idempotency behavior as its only duplica
 ## Repository Structure
 
 ```text
-bank/                 supplied mock bank API and tests
-docker/               local bank and PostgreSQL environment
-README.md              current project status and setup
+src/
+  FicMart.PaymentGateway.Api/             Minimal API host
+  FicMart.PaymentGateway.Domain/          payment rules and domain types
+  FicMart.PaymentGateway.Infrastructure/  EF Core and external integrations
+tests/
+  FicMart.PaymentGateway.IntegrationTests/ HTTP and PostgreSQL integration tests
+bank/                                      supplied mock bank API and tests
+docker/                                    local mock bank environment
 ```
-
-The gateway solution and its tests will be added after the remaining Stage 0 decisions are complete.
 
 ## Project Origin
 
