@@ -6,9 +6,9 @@ The gateway will sit between FicMart and a supplied mock bank API. FicMart will 
 
 ## Status
 
-The project is in its initial build stage. The repository and mock bank are set up, the bank contract has been inspected locally, and the .NET 10 solution now builds and runs.
+The payment domain and initial PostgreSQL persistence layer are complete. The gateway now models payment and authorization-attempt lifecycles, stores pending authorization intent before external work, and enforces the first set of database invariants through an EF Core migration.
 
-The gateway currently exposes only a health endpoint. The next implementation slice will define and build the first authorization flow.
+The HTTP API still exposes only a health endpoint. The next implementation slice is a typed client for the supplied mock bank; the authorization endpoint will follow after its API contract is agreed.
 
 ## Current Scope
 
@@ -61,6 +61,7 @@ docker compose -f docker/docker-compose.yaml exec bank-api sh -c \
 Restore dependencies and build the solution:
 
 ```bash
+dotnet tool restore
 dotnet restore FicMart.PaymentGateway.slnx
 dotnet build FicMart.PaymentGateway.slnx --no-restore
 ```
@@ -85,6 +86,13 @@ dotnet run --project src/FicMart.PaymentGateway.Api --urls http://localhost:5080
 
 The health endpoint is available at <http://localhost:5080/health>.
 
+Apply the gateway database migration to the configured PostgreSQL database:
+
+```bash
+dotnet ef database update \
+  --project src/FicMart.PaymentGateway.Infrastructure
+```
+
 Local configuration keys are shown in [`.env.example`](./.env.example). Supply them as environment variables or through .NET user secrets; do not commit real credentials.
 
 ## Mock Bank Behavior
@@ -106,10 +114,13 @@ src/
   FicMart.PaymentGateway.Domain/          payment rules and domain types
   FicMart.PaymentGateway.Infrastructure/  EF Core and external integrations
 tests/
+  FicMart.PaymentGateway.UnitTests/        domain behavior tests
   FicMart.PaymentGateway.IntegrationTests/ HTTP and PostgreSQL integration tests
 bank/                                      supplied mock bank API and tests
 docker/                                    local mock bank environment
 ```
+
+Payment tables are not seeded by the application. Integration tests create non-sensitive fixtures in disposable PostgreSQL containers so fake financial records never enter a normal runtime database.
 
 ## Project Origin
 

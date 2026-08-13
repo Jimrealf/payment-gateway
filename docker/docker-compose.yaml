@@ -58,6 +58,28 @@ services:
       retries: 3
       start_period: 40s
 
+  payment-gateway-postgres:
+    image: postgres:16-alpine
+    container_name: payment-gateway-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: payment_gateway
+      PGDATA: /var/lib/postgresql/data/pgdata
+    ports:
+      - "5433:5432"
+    volumes:
+      - payment_gateway_postgres_data:/var/lib/postgresql/data
+    networks:
+      - bank-network
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d payment_gateway"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 10s
+
 networks:
   bank-network:
     driver: bridge
@@ -68,3 +90,5 @@ volumes:
     name: mockbank-postgres-data
   air_tmp:
     name: mockbank-air-tmp
+  payment_gateway_postgres_data:
+    name: payment-gateway-postgres-data
