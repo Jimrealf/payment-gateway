@@ -12,6 +12,8 @@ public sealed class PostgreSqlDatabase : IAsyncLifetime
         .WithPassword("postgres")
         .Build();
 
+    public string ConnectionString => container.GetConnectionString();
+
     public PaymentGatewayDbContext CreateDbContext()
     {
         var options = new DbContextOptionsBuilder<PaymentGatewayDbContext>()

@@ -6,9 +6,9 @@ The gateway will sit between FicMart and a supplied mock bank API. FicMart will 
 
 ## Status
 
-The payment domain and initial PostgreSQL persistence layer are complete. The gateway now models payment and authorization-attempt lifecycles, stores pending authorization intent before external work, and enforces the first set of database invariants through an EF Core migration.
+Authorization and capture are implemented end to end. The gateway validates FicMart requests, durably records intent before calling the bank, coordinates duplicate requests through PostgreSQL, retries bounded transient bank failures, and represents uncertain outcomes without reporting a false success or decline.
 
-The HTTP API still exposes only a health endpoint. The next implementation slice is a typed client for the supplied mock bank; the authorization endpoint will follow after its API contract is agreed.
+The next implementation slice is Stage 9: voiding an authorization before capture.
 
 ## Current Scope
 
@@ -19,7 +19,7 @@ The completed gateway will support the payment lifecycle used by FicMart:
 3. Void an authorization when an order is cancelled before capture.
 4. Refund a captured payment after a return.
 
-The first implementation slice will focus on authorization. Later operations will be added incrementally after their behavior and failure cases have been discussed.
+Authorization and capture are complete. Void and refund will be added incrementally after their behavior and failure cases are discussed.
 
 ## Requirements
 
@@ -85,6 +85,8 @@ dotnet run --project src/FicMart.PaymentGateway.Api --urls http://localhost:5080
 ```
 
 The health endpoint is available at <http://localhost:5080/health>.
+
+Authorize a payment with `POST /api/v1/payments/authorize` and capture it with `POST /api/v1/payments/{paymentId}/capture`. Both operations require an `Idempotency-Key` header. See [`.env.example`](./.env.example) for the bank, database, and fingerprint-secret configuration keys.
 
 Apply the gateway database migration to the configured PostgreSQL database:
 

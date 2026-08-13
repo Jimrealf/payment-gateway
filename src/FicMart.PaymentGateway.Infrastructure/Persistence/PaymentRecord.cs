@@ -35,4 +35,10 @@ internal sealed class PaymentRecord
     public DateTimeOffset CreatedAt { get; private set; }
 
     public DateTimeOffset UpdatedAt { get; private set; }
+
+    internal void Apply(Payment payment)
+    {
+        Status = payment.Status;
+        UpdatedAt = payment.UpdatedAt;
+    }
 }

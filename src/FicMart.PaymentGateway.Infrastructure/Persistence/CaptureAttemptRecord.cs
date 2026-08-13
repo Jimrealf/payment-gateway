@@ -1,20 +1,20 @@
-using FicMart.PaymentGateway.Domain.AuthorizationAttempts;
+using FicMart.PaymentGateway.Domain.CaptureAttempts;
 
 namespace FicMart.PaymentGateway.Infrastructure.Persistence;
 
-internal sealed class AuthorizationAttemptRecord
+internal sealed class CaptureAttemptRecord
 {
-    private AuthorizationAttemptRecord()
+    private CaptureAttemptRecord()
     {
     }
 
-    internal AuthorizationAttemptRecord(AuthorizationAttempt attempt)
+    internal CaptureAttemptRecord(CaptureAttempt attempt)
     {
         Id = attempt.Id.Value;
         PaymentId = attempt.PaymentId.Value;
         BankIdempotencyKey = attempt.BankIdempotencyKey.Value;
         Status = attempt.Status;
-        BankAuthorizationId = attempt.BankAuthorizationId?.Value;
+        BankCaptureId = attempt.BankCaptureId?.Value;
         CreatedAt = attempt.CreatedAt;
         UpdatedAt = attempt.UpdatedAt;
     }
@@ -25,18 +25,18 @@ internal sealed class AuthorizationAttemptRecord
 
     public Guid BankIdempotencyKey { get; private set; }
 
-    public AuthorizationAttemptStatus Status { get; private set; }
+    public CaptureAttemptStatus Status { get; private set; }
 
-    public string? BankAuthorizationId { get; private set; }
+    public string? BankCaptureId { get; private set; }
 
     public DateTimeOffset CreatedAt { get; private set; }
 
     public DateTimeOffset UpdatedAt { get; private set; }
 
-    internal void Apply(AuthorizationAttempt attempt)
+    internal void Apply(CaptureAttempt attempt)
     {
         Status = attempt.Status;
-        BankAuthorizationId = attempt.BankAuthorizationId?.Value;
+        BankCaptureId = attempt.BankCaptureId?.Value;
         UpdatedAt = attempt.UpdatedAt;
     }
 }

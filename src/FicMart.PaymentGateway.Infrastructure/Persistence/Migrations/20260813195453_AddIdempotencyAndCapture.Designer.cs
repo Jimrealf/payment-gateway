@@ -3,6 +3,7 @@ using System;
 using FicMart.PaymentGateway.Infrastructure.Persistence;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.EntityFrameworkCore.Infrastructure;
+using Microsoft.EntityFrameworkCore.Migrations;
 using Microsoft.EntityFrameworkCore.Storage.ValueConversion;
 using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 
@@ -11,9 +12,11 @@ using Npgsql.EntityFrameworkCore.PostgreSQL.Metadata;
 namespace FicMart.PaymentGateway.Infrastructure.Persistence.Migrations
 {
     [DbContext(typeof(PaymentGatewayDbContext))]
-    partial class PaymentGatewayDbContextModelSnapshot : ModelSnapshot
+    [Migration("20260813195453_AddIdempotencyAndCapture")]
+    partial class AddIdempotencyAndCapture
     {
-        protected override void BuildModel(ModelBuilder modelBuilder)
+        /// <inheritdoc />
+        protected override void BuildTargetModel(ModelBuilder modelBuilder)
         {
 #pragma warning disable 612, 618
             modelBuilder
