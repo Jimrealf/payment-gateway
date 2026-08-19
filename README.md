@@ -17,7 +17,7 @@ The gateway currently supports:
 - operation-scoped idempotency for every money-moving request
 - bounded retries for known transient bank failures
 - explicit unknown outcomes for timeouts and lost responses
-- recovery of capture, void, and refund operations after a restart
+- recovery of abandoned and uncertain operations after a restart
 - database-enforced protection against capture-versus-void races
 - API-key authentication, correlation IDs, audit history, and metrics
 - Docker-based local setup and automated CI verification
@@ -54,13 +54,14 @@ dotnet ef database update --project src/FicMart.PaymentGateway.Infrastructure
 export FICMART_API_KEY='local-ficmart-api-key-at-least-32-characters'
 export FicMartApi__ApiKey="$FICMART_API_KEY"
 export Idempotency__FingerprintSecret='local-fingerprint-secret-at-least-32-characters'
+export Idempotency__ProcessingLeaseSeconds=120
 export ConnectionStrings__PaymentGateway='Host=localhost;Port=5433;Database=payment_gateway;Username=postgres;Password=postgres'
 export Bank__BaseUrl='http://localhost:8787'
 
 dotnet run --project src/FicMart.PaymentGateway.Api --urls http://localhost:5080
 ```
 
-Set `FicMartApi__ApiKey`, `Idempotency__FingerprintSecret`, the gateway connection string, and bank URL using environment variables or user secrets. [`.env.example`](./.env.example) lists the keys. Never commit real secrets.
+Set `FicMartApi__ApiKey`, `Idempotency__FingerprintSecret`, the gateway connection string, and bank URL using environment variables or user secrets. The service fails at startup when the gateway connection string is missing outside the development configuration. [`.env.example`](./.env.example) lists the keys. Never commit real secrets.
 
 ## API
 
@@ -94,7 +95,7 @@ curl -X POST http://localhost:5080/api/v1/payments/{paymentId}/capture \
   -H "Idempotency-Key: order-1001-capture"
 ```
 
-When the bank times out, the gateway returns `202 Accepted` instead of guessing the result. FicMart should wait and query the payment before retrying. Retrying with the same idempotency key reuses the stored bank operation key and cannot intentionally create a second logical operation.
+When the bank times out, the gateway returns `202 Accepted` instead of guessing the result. FicMart should wait and query the payment before retrying. Retrying with the same idempotency key reuses the stored bank operation key and cannot intentionally create a second logical operation. A processing lease also lets the same request recover work abandoned by a crash or canceled request without treating an active duplicate as a new operation.
 
 ## Verify
 
@@ -109,7 +110,7 @@ dotnet ef migrations has-pending-model-changes \
 
 Integration tests use Testcontainers and require Docker.
 
-The current suite covers domain transitions, PostgreSQL constraints and migrations, duplicate requests, transient failures, unknown-outcome recovery, authentication, full payment lifecycles, and the capture-versus-void race.
+The current suite covers domain transitions, PostgreSQL constraints and migrations, duplicate requests, transient failures, abandoned and unknown-outcome recovery, authentication, full payment lifecycles, and stable replay after a capture-versus-void race.
 
 ## Documentation
 

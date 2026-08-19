@@ -8,6 +8,7 @@ using FicMart.PaymentGateway.Domain.Payments;
 using FicMart.PaymentGateway.Infrastructure.Bank;
 using FicMart.PaymentGateway.Infrastructure.Persistence;
 using FicMart.PaymentGateway.Api.Observability;
+using Microsoft.Extensions.Options;
 using System.Diagnostics;
 
 namespace FicMart.PaymentGateway.Api.Payments;
@@ -18,7 +19,8 @@ public sealed class PaymentService(
     IBankClient bankClient,
     RequestFingerprint fingerprint,
     PaymentGatewayMetrics metrics,
-    TimeProvider timeProvider)
+    TimeProvider timeProvider,
+    IOptions<IdempotencyOptions> idempotencyOptions)
 {
     private const int MaximumBankAttempts = 3;
 
@@ -116,15 +118,12 @@ public sealed class PaymentService(
                 return await ResponseFromPaymentAsync(existingIdempotency.PaymentId, false, cancellationToken);
             }
 
-            if (existingIdempotency.State == IdempotencyState.Processing)
-            {
-                return Pending(existingIdempotency.PaymentId, "capture_processing", "Capture is already processing.");
-            }
-
-            if (!await workflowStore.TryClaimRetryAsync(
+            var claimTime = timeProvider.GetUtcNow();
+            if (!await workflowStore.TryClaimExecutionAsync(
                     IdempotencyOperation.Capture,
                     idempotencyKey,
-                    timeProvider.GetUtcNow(),
+                    claimTime,
+                    GetProcessingLeaseCutoff(claimTime),
                     cancellationToken))
             {
                 return Pending(existingIdempotency.PaymentId, "capture_processing", "Capture is already processing.");
@@ -200,7 +199,11 @@ public sealed class PaymentService(
         if (payment is null)
             return new ReconciliationResponse(paymentId.Value, "not_found", "payment_not_found", null);
 
-        var candidate = await workflowStore.FindReconciliationCandidateAsync(paymentId, cancellationToken);
+        var reconciliationTime = timeProvider.GetUtcNow();
+        var candidate = await workflowStore.FindReconciliationCandidateAsync(
+            paymentId,
+            GetProcessingLeaseCutoff(reconciliationTime),
+            cancellationToken);
         if (candidate is null)
         {
             await RecordReconciliationAsync(paymentId, null, ReconciliationOutcome.NoActionRequired, "no_retryable_operation", cancellationToken);
@@ -217,10 +220,11 @@ public sealed class PaymentService(
             return new ReconciliationResponse(paymentId.Value, "operator_review_required", "original_card_request_required", null);
         }
 
-        if (!await workflowStore.TryClaimRetryAsync(
+        if (!await workflowStore.TryClaimExecutionAsync(
                 candidate.Operation,
                 candidate.IdempotencyKey,
-                timeProvider.GetUtcNow(),
+                reconciliationTime,
+                GetProcessingLeaseCutoff(reconciliationTime),
                 cancellationToken))
         {
             await RecordReconciliationAsync(paymentId, candidate.Operation, ReconciliationOutcome.AlreadyProcessing, "operation_already_processing", cancellationToken);
@@ -370,8 +374,13 @@ public sealed class PaymentService(
             metrics.RecordReplay(operationName);
             return await ResponseFromOperationAsync(existing.PaymentId, operation, cancellationToken);
         }
-        if (existing.State == IdempotencyState.Processing ||
-            !await workflowStore.TryClaimRetryAsync(operation, key, timeProvider.GetUtcNow(), cancellationToken))
+        var claimTime = timeProvider.GetUtcNow();
+        if (!await workflowStore.TryClaimExecutionAsync(
+                operation,
+                key,
+                claimTime,
+                GetProcessingLeaseCutoff(claimTime),
+                cancellationToken))
             return Pending(existing.PaymentId, $"{operationName}_processing", $"{ToTitleCase(operationName)} is already processing.");
         return await execute(existing.PaymentId, key, cancellationToken);
     }
@@ -398,15 +407,12 @@ public sealed class PaymentService(
             return await ResponseFromPaymentAsync(existing.PaymentId, true, cancellationToken);
         }
 
-        if (existing.State == IdempotencyState.Processing)
-        {
-            return Pending(existing.PaymentId, "authorization_processing", "Authorization is already processing.");
-        }
-
-        if (!await workflowStore.TryClaimRetryAsync(
+        var claimTime = timeProvider.GetUtcNow();
+        if (!await workflowStore.TryClaimExecutionAsync(
                 IdempotencyOperation.Authorize,
                 key,
-                timeProvider.GetUtcNow(),
+                claimTime,
+                GetProcessingLeaseCutoff(claimTime),
                 cancellationToken))
         {
             return Pending(existing.PaymentId, "authorization_processing", "Authorization is already processing.");
@@ -623,13 +629,26 @@ public sealed class PaymentService(
     {
         var snapshot = await paymentStore.FindByIdAsync(paymentId, cancellationToken)
             ?? throw new InvalidOperationException("Idempotent payment was not found.");
-        return operation switch
+
+        if (operation == IdempotencyOperation.Void)
         {
-            IdempotencyOperation.Void when snapshot.Payment.Status == PaymentStatus.Voided =>
-                Success(200, snapshot.Payment, PaymentStatus.Voided),
-            IdempotencyOperation.Refund when snapshot.Payment.Status == PaymentStatus.Refunded =>
+            var work = await workflowStore.GetVoidWorkAsync(paymentId, cancellationToken);
+            return work.Attempt.Status switch
+            {
+                OperationAttemptStatus.Succeeded when snapshot.Payment.Status == PaymentStatus.Voided =>
+                    Success(200, snapshot.Payment, PaymentStatus.Voided),
+                OperationAttemptStatus.Succeeded => StateConflict("void", paymentId),
+                _ => Error(409, "void_rejected", "The bank rejected the void.", paymentId),
+            };
+        }
+
+        var refund = await workflowStore.GetRefundWorkAsync(paymentId, cancellationToken);
+        return refund.Attempt.Status switch
+        {
+            OperationAttemptStatus.Succeeded when snapshot.Payment.Status == PaymentStatus.Refunded =>
                 Success(200, snapshot.Payment, PaymentStatus.Refunded),
-            _ => Error(409, $"{operation.ToString().ToLowerInvariant()}_rejected", $"The bank rejected the {operation.ToString().ToLowerInvariant()}.", paymentId),
+            OperationAttemptStatus.Succeeded => StateConflict("refund", paymentId),
+            _ => Error(409, "refund_rejected", "The bank rejected the refund.", paymentId),
         };
     }
 
@@ -647,7 +666,10 @@ public sealed class PaymentService(
             var capture = await workflowStore.GetCaptureWorkAsync(paymentId, cancellationToken);
             return capture.Attempt.Status switch
             {
-                CaptureAttemptStatus.Succeeded => Success(200, snapshot.Payment, PaymentStatus.Captured),
+                CaptureAttemptStatus.Succeeded
+                    when snapshot.Payment.Status is PaymentStatus.Captured or PaymentStatus.Refunded =>
+                    Success(200, snapshot.Payment, PaymentStatus.Captured),
+                CaptureAttemptStatus.Succeeded => StateConflict("capture", paymentId),
                 CaptureAttemptStatus.Rejected => Error(
                     409,
                     "capture_rejected",
@@ -657,13 +679,23 @@ public sealed class PaymentService(
             };
         }
 
-        return snapshot.Payment.Status switch
+        var authorizationWork = await workflowStore.GetAuthorizationWorkAsync(paymentId, cancellationToken);
+        return authorizationWork.Attempt.Status switch
         {
-            PaymentStatus.Authorized => Success(201, snapshot.Payment, PaymentStatus.Authorized),
-            PaymentStatus.Declined => Error(402, "payment_declined", "The bank declined the authorization.", paymentId, "declined"),
+            AuthorizationAttemptStatus.Succeeded => Success(201, snapshot.Payment, PaymentStatus.Authorized),
+            AuthorizationAttemptStatus.Rejected => Error(402, "payment_declined", "The bank declined the authorization.", paymentId, "declined"),
             _ => Pending(paymentId, "payment_processing", "The payment is still processing."),
         };
     }
+
+    private DateTimeOffset GetProcessingLeaseCutoff(DateTimeOffset now) =>
+        now.AddSeconds(-idempotencyOptions.Value.ProcessingLeaseSeconds);
+
+    private static PaymentCommandResult StateConflict(string operation, PaymentId paymentId) => Error(
+        409,
+        "payment_state_conflict",
+        $"The bank completed the {operation}, but the payment changed state before the gateway could apply it.",
+        paymentId);
 
     private static PaymentCommandResult Success(int statusCode, Payment payment, PaymentStatus status) =>
         PaymentCommandResult.Success(

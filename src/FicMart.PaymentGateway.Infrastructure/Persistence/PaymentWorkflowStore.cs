@@ -70,16 +70,19 @@ public sealed class PaymentWorkflowStore(PaymentGatewayDbContext dbContext)
                 record.State);
     }
 
-    public async Task<bool> TryClaimRetryAsync(
+    public async Task<bool> TryClaimExecutionAsync(
         IdempotencyOperation operation,
         GatewayIdempotencyKey key,
         DateTimeOffset occurredAt,
+        DateTimeOffset processingLeaseCutoff,
         CancellationToken cancellationToken) =>
         await dbContext.IdempotencyRecords
             .Where(record =>
                 record.Operation == operation &&
                 record.Key == key.Value &&
-                record.State == IdempotencyState.Retryable)
+                (record.State == IdempotencyState.Retryable ||
+                    (record.State == IdempotencyState.Processing &&
+                        record.UpdatedAt <= processingLeaseCutoff)))
             .ExecuteUpdateAsync(
                 setters => setters
                     .SetProperty(record => record.State, IdempotencyState.Processing)
@@ -88,11 +91,16 @@ public sealed class PaymentWorkflowStore(PaymentGatewayDbContext dbContext)
 
     public async Task<ReconciliationCandidate?> FindReconciliationCandidateAsync(
         PaymentId paymentId,
+        DateTimeOffset processingLeaseCutoff,
         CancellationToken cancellationToken)
     {
         var record = await dbContext.IdempotencyRecords
             .AsNoTracking()
-            .Where(item => item.PaymentId == paymentId.Value && item.State == IdempotencyState.Retryable)
+            .Where(item =>
+                item.PaymentId == paymentId.Value &&
+                (item.State == IdempotencyState.Retryable ||
+                    (item.State == IdempotencyState.Processing &&
+                        item.UpdatedAt <= processingLeaseCutoff)))
             .OrderByDescending(item => item.UpdatedAt)
             .FirstOrDefaultAsync(cancellationToken);
         return record is null

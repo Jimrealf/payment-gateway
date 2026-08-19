@@ -3,6 +3,7 @@ using System.Net.Http.Json;
 using FicMart.PaymentGateway.Api.Payments;
 using FicMart.PaymentGateway.Domain.Identifiers;
 using FicMart.PaymentGateway.Infrastructure.Bank;
+using Microsoft.EntityFrameworkCore;
 
 namespace FicMart.PaymentGateway.IntegrationTests;
 
@@ -50,7 +51,7 @@ public sealed class PaymentApiTests(PostgreSqlDatabase database)
     }
 
     [Fact]
-    public async Task CompletedAuthorizationIsReplayedWithoutCallingBankAgain()
+    public async Task CompletedAuthorizationReplaysItsOriginalOutcomeAfterCapture()
     {
         var bank = new ScriptedBankClient();
         using var application = new PaymentApiFactory(database, bank);
@@ -59,10 +60,16 @@ public sealed class PaymentApiTests(PostgreSqlDatabase database)
         var key = NewKey();
 
         using var first = await AuthorizeAsync(client, request, key);
+        var payment = await first.Content.ReadFromJsonAsync<PaymentResponse>(
+            TestContext.Current.CancellationToken);
+        using var capture = await CaptureAsync(client, payment!.PaymentId, NewKey());
         using var replay = await AuthorizeAsync(client, request, key);
+        var replayedPayment = await replay.Content.ReadFromJsonAsync<PaymentResponse>(
+            TestContext.Current.CancellationToken);
 
         Assert.Equal(HttpStatusCode.Created, first.StatusCode);
         Assert.Equal(HttpStatusCode.Created, replay.StatusCode);
+        Assert.Equal("authorized", replayedPayment?.Status);
         Assert.Equal(1, bank.AuthorizationCalls);
     }
 
@@ -102,6 +109,43 @@ public sealed class PaymentApiTests(PostgreSqlDatabase database)
         Assert.Equal(HttpStatusCode.Created, first.StatusCode);
         Assert.Equal(HttpStatusCode.Accepted, duplicate.StatusCode);
         Assert.Equal(1, bank.AuthorizationCalls);
+    }
+
+    [Fact]
+    public async Task AbandonedAuthorizationCanBeRecoveredWithTheSameBankKey()
+    {
+        var bank = new ScriptedBankClient { BlockAuthorization = true };
+        using var application = new PaymentApiFactory(database, bank);
+        using var client = application.CreateClient();
+        var request = NewRequest();
+        var key = NewKey();
+        using var cancellation = new CancellationTokenSource();
+
+        var abandonedRequest = AuthorizeWithCancellationAsync(
+            client,
+            request,
+            key,
+            cancellation.Token);
+        await bank.WaitForAuthorizationAsync();
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => abandonedRequest);
+
+        await using (var dbContext = database.CreateDbContext())
+        {
+            await dbContext.Database.ExecuteSqlInterpolatedAsync($"""
+                UPDATE idempotency_records
+                SET created_at = created_at - INTERVAL '3 minutes',
+                    updated_at = updated_at - INTERVAL '3 minutes'
+                WHERE operation = 'Authorize' AND key = {key}
+                """, TestContext.Current.CancellationToken);
+        }
+
+        bank.BlockAuthorization = false;
+        using var recovered = await AuthorizeAsync(client, request, key);
+
+        Assert.Equal(HttpStatusCode.Created, recovered.StatusCode);
+        Assert.Equal(2, bank.AuthorizationCalls);
+        Assert.Single(bank.AuthorizationKeys.Distinct());
     }
 
     [Fact]
@@ -340,26 +384,30 @@ public sealed class PaymentApiTests(PostgreSqlDatabase database)
     }
 
     [Fact]
-    public async Task CaptureAndVoidCannotBothChangeThePaymentState()
+    public async Task CaptureLosingToVoidReplaysAsAConflict()
     {
         var bank = new ScriptedBankClient { BlockCapture = true, BlockVoid = true };
         using var application = new PaymentApiFactory(database, bank);
         using var client = application.CreateClient();
         var payment = await AuthorizePaymentAsync(client);
+        var captureKey = NewKey();
+        var voidKey = NewKey();
 
-        var captureTask = CaptureAsync(client, payment.PaymentId, NewKey());
-        var voidTask = OperationAsync(client, payment.PaymentId, "void", NewKey());
+        var captureTask = CaptureAsync(client, payment.PaymentId, captureKey);
+        var voidTask = OperationAsync(client, payment.PaymentId, "void", voidKey);
         await Task.WhenAll(bank.WaitForCaptureAsync(), bank.WaitForVoidAsync());
-        bank.ReleaseCapture();
         bank.ReleaseVoid();
-        using var capture = await captureTask;
         using var voidResponse = await voidTask;
+        bank.ReleaseCapture();
+        using var capture = await captureTask;
+        using var replay = await CaptureAsync(client, payment.PaymentId, captureKey);
 
-        Assert.True(capture.StatusCode == HttpStatusCode.OK || voidResponse.StatusCode == HttpStatusCode.OK);
-        Assert.True(capture.StatusCode == HttpStatusCode.Conflict || voidResponse.StatusCode == HttpStatusCode.Conflict);
+        Assert.Equal(HttpStatusCode.OK, voidResponse.StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, capture.StatusCode);
+        Assert.Equal(HttpStatusCode.Conflict, replay.StatusCode);
         using var query = await client.GetAsync($"/api/v1/payments/{payment.PaymentId}", TestContext.Current.CancellationToken);
         var details = await query.Content.ReadFromJsonAsync<PaymentDetailsResponse>(TestContext.Current.CancellationToken);
-        Assert.True(details!.Status is "captured" or "voided");
+        Assert.Equal("voided", details!.Status);
     }
 
     [Fact]
@@ -445,6 +493,20 @@ public sealed class PaymentApiTests(PostgreSqlDatabase database)
         };
         message.Headers.Add("Idempotency-Key", key);
         return await client.SendAsync(message, TestContext.Current.CancellationToken);
+    }
+
+    private static async Task<HttpResponseMessage> AuthorizeWithCancellationAsync(
+        HttpClient client,
+        AuthorizePaymentRequest request,
+        string key,
+        CancellationToken cancellationToken)
+    {
+        using var message = new HttpRequestMessage(HttpMethod.Post, "/api/v1/payments/authorize")
+        {
+            Content = JsonContent.Create(request),
+        };
+        message.Headers.Add("Idempotency-Key", key);
+        return await client.SendAsync(message, cancellationToken);
     }
 
     private static async Task<HttpResponseMessage> CaptureAsync(HttpClient client, Guid paymentId, string key)

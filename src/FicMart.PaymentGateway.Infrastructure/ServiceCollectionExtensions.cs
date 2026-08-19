@@ -14,7 +14,8 @@ public static class ServiceCollectionExtensions
         IConfiguration configuration)
     {
         var connectionString = configuration.GetConnectionString("PaymentGateway") ??
-            "Host=localhost;Port=5433;Database=payment_gateway;Username=postgres;Password=postgres";
+            throw new InvalidOperationException(
+                "ConnectionStrings:PaymentGateway must be configured.");
         services.AddDbContext<PaymentGatewayDbContext>(options => options.UseNpgsql(connectionString));
 
         services.AddOptions<BankOptions>()
