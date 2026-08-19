@@ -121,6 +121,5 @@ The current suite covers domain transitions, PostgreSQL constraints and migratio
 - [Testing](./TESTING.md)
 - [Performance](./PERFORMANCE.md)
 - [Operations](./OPERATIONS.md)
-- [Trade-offs](./TRADEOFFS.md)
 
 This project is based on the [payment gateway exercise](https://github.com/benx421/payment-gateway).
