@@ -255,6 +255,175 @@ public sealed class PaymentApiTests(PostgreSqlDatabase database)
         Assert.Equal(1, bank.CaptureCalls);
     }
 
+    [Fact]
+    public async Task AuthorizedPaymentCanBeVoidedAndReplayedExactlyOnce()
+    {
+        var bank = new ScriptedBankClient();
+        using var application = new PaymentApiFactory(database, bank);
+        using var client = application.CreateClient();
+        var payment = await AuthorizePaymentAsync(client);
+        var key = NewKey();
+
+        using var first = await OperationAsync(client, payment.PaymentId, "void", key);
+        using var replay = await OperationAsync(client, payment.PaymentId, "void", key);
+
+        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, replay.StatusCode);
+        Assert.Equal(1, bank.VoidCalls);
+    }
+
+    [Fact]
+    public async Task CapturedPaymentCanBeRefundedAndReplayedExactlyOnce()
+    {
+        var bank = new ScriptedBankClient();
+        using var application = new PaymentApiFactory(database, bank);
+        using var client = application.CreateClient();
+        var payment = await AuthorizePaymentAsync(client);
+        using var capture = await CaptureAsync(client, payment.PaymentId, NewKey());
+        var key = NewKey();
+
+        using var first = await OperationAsync(client, payment.PaymentId, "refund", key);
+        using var replay = await OperationAsync(client, payment.PaymentId, "refund", key);
+
+        Assert.Equal(HttpStatusCode.OK, first.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, replay.StatusCode);
+        Assert.Equal(1, bank.RefundCalls);
+    }
+
+    [Fact]
+    public async Task RefundBeforeCaptureIsRejectedWithoutCallingBank()
+    {
+        var bank = new ScriptedBankClient();
+        using var application = new PaymentApiFactory(database, bank);
+        using var client = application.CreateClient();
+        var payment = await AuthorizePaymentAsync(client);
+
+        using var response = await OperationAsync(client, payment.PaymentId, "refund", NewKey());
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        Assert.Equal(0, bank.RefundCalls);
+    }
+
+    [Fact]
+    public async Task CapturedPaymentCannotBeVoided()
+    {
+        var bank = new ScriptedBankClient();
+        using var application = new PaymentApiFactory(database, bank);
+        using var client = application.CreateClient();
+        var payment = await AuthorizePaymentAsync(client);
+        using var capture = await CaptureAsync(client, payment.PaymentId, NewKey());
+
+        using var response = await OperationAsync(client, payment.PaymentId, "void", NewKey());
+
+        Assert.Equal(HttpStatusCode.Conflict, response.StatusCode);
+        Assert.Equal(0, bank.VoidCalls);
+    }
+
+    [Fact]
+    public async Task UnknownRefundCanBeRetriedWithTheSameBankKey()
+    {
+        var bank = new ScriptedBankClient();
+        bank.EnqueueRefund(new BankRefundResult.Unknown());
+        using var application = new PaymentApiFactory(database, bank);
+        using var client = application.CreateClient();
+        var payment = await AuthorizePaymentAsync(client);
+        using var capture = await CaptureAsync(client, payment.PaymentId, NewKey());
+        var key = NewKey();
+
+        using var unknown = await OperationAsync(client, payment.PaymentId, "refund", key);
+        using var recovered = await OperationAsync(client, payment.PaymentId, "refund", key);
+
+        Assert.Equal(HttpStatusCode.Accepted, unknown.StatusCode);
+        Assert.Equal(HttpStatusCode.OK, recovered.StatusCode);
+        Assert.Equal(2, bank.RefundCalls);
+        Assert.Single(bank.RefundKeys.Distinct());
+    }
+
+    [Fact]
+    public async Task CaptureAndVoidCannotBothChangeThePaymentState()
+    {
+        var bank = new ScriptedBankClient { BlockCapture = true, BlockVoid = true };
+        using var application = new PaymentApiFactory(database, bank);
+        using var client = application.CreateClient();
+        var payment = await AuthorizePaymentAsync(client);
+
+        var captureTask = CaptureAsync(client, payment.PaymentId, NewKey());
+        var voidTask = OperationAsync(client, payment.PaymentId, "void", NewKey());
+        await Task.WhenAll(bank.WaitForCaptureAsync(), bank.WaitForVoidAsync());
+        bank.ReleaseCapture();
+        bank.ReleaseVoid();
+        using var capture = await captureTask;
+        using var voidResponse = await voidTask;
+
+        Assert.True(capture.StatusCode == HttpStatusCode.OK || voidResponse.StatusCode == HttpStatusCode.OK);
+        Assert.True(capture.StatusCode == HttpStatusCode.Conflict || voidResponse.StatusCode == HttpStatusCode.Conflict);
+        using var query = await client.GetAsync($"/api/v1/payments/{payment.PaymentId}", TestContext.Current.CancellationToken);
+        var details = await query.Content.ReadFromJsonAsync<PaymentDetailsResponse>(TestContext.Current.CancellationToken);
+        Assert.True(details!.Status is "captured" or "voided");
+    }
+
+    [Fact]
+    public async Task PaymentCanBeQueriedByIdAndOrderWithoutSensitiveFields()
+    {
+        var bank = new ScriptedBankClient();
+        using var application = new PaymentApiFactory(database, bank);
+        using var client = application.CreateClient();
+        var request = NewRequest();
+        using var authorization = await AuthorizeAsync(client, request, NewKey());
+        var payment = await authorization.Content.ReadFromJsonAsync<PaymentResponse>(TestContext.Current.CancellationToken);
+
+        using var response = await client.GetAsync($"/api/v1/payments/by-order/{request.OrderId}", TestContext.Current.CancellationToken);
+        var json = await response.Content.ReadAsStringAsync(TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Contains(payment!.PaymentId.ToString(), json, StringComparison.OrdinalIgnoreCase);
+        Assert.DoesNotContain(request.CardNumber, json, StringComparison.Ordinal);
+        Assert.DoesNotContain(request.Cvv, json, StringComparison.Ordinal);
+        Assert.DoesNotContain(request.CustomerId, json, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task ReconciliationRecoversUnknownCaptureWithoutOriginalCardData()
+    {
+        var bank = new ScriptedBankClient();
+        bank.EnqueueCapture(new BankCaptureResult.Unknown());
+        using var application = new PaymentApiFactory(database, bank);
+        using var client = application.CreateClient();
+        var payment = await AuthorizePaymentAsync(client);
+        using var unknown = await CaptureAsync(client, payment.PaymentId, NewKey());
+
+        using var reconciled = await client.PostAsync(
+            $"/api/v1/payments/{payment.PaymentId}/reconcile",
+            null,
+            TestContext.Current.CancellationToken);
+        var result = await reconciled.Content.ReadFromJsonAsync<ReconciliationResponse>(TestContext.Current.CancellationToken);
+
+        Assert.Equal(HttpStatusCode.OK, reconciled.StatusCode);
+        Assert.Equal("recovered", result?.Outcome);
+        Assert.Equal(2, bank.CaptureCalls);
+
+        using var repeated = await client.PostAsync(
+            $"/api/v1/payments/{payment.PaymentId}/reconcile",
+            null,
+            TestContext.Current.CancellationToken);
+        var repeatedResult = await repeated.Content.ReadFromJsonAsync<ReconciliationResponse>(TestContext.Current.CancellationToken);
+        Assert.Equal("no_action_required", repeatedResult?.Outcome);
+        Assert.Equal(2, bank.CaptureCalls);
+    }
+
+    [Fact]
+    public async Task ApiRequiresAuthenticationAndReturnsCorrelationId()
+    {
+        var bank = new ScriptedBankClient();
+        using var application = new PaymentApiFactory(database, bank);
+        using var client = application.CreateClient();
+        client.DefaultRequestHeaders.Remove("X-FicMart-Api-Key");
+
+        using var unauthorized = await client.GetAsync($"/api/v1/payments/{Guid.NewGuid()}", TestContext.Current.CancellationToken);
+        Assert.Equal(HttpStatusCode.Unauthorized, unauthorized.StatusCode);
+        Assert.True(unauthorized.Headers.Contains("X-Correlation-Id"));
+    }
+
     private static AuthorizePaymentRequest NewRequest(long amount = 2500) => new(
         $"order-{Guid.NewGuid()}",
         "customer-123",
@@ -283,6 +452,19 @@ public sealed class PaymentApiTests(PostgreSqlDatabase database)
         using var message = new HttpRequestMessage(
             HttpMethod.Post,
             $"/api/v1/payments/{paymentId}/capture");
+        message.Headers.Add("Idempotency-Key", key);
+        return await client.SendAsync(message, TestContext.Current.CancellationToken);
+    }
+
+    private static async Task<PaymentResponse> AuthorizePaymentAsync(HttpClient client)
+    {
+        using var response = await AuthorizeAsync(client, NewRequest(), NewKey());
+        return (await response.Content.ReadFromJsonAsync<PaymentResponse>(TestContext.Current.CancellationToken))!;
+    }
+
+    private static async Task<HttpResponseMessage> OperationAsync(HttpClient client, Guid paymentId, string operation, string key)
+    {
+        using var message = new HttpRequestMessage(HttpMethod.Post, $"/api/v1/payments/{paymentId}/{operation}");
         message.Headers.Add("Idempotency-Key", key);
         return await client.SendAsync(message, TestContext.Current.CancellationToken);
     }

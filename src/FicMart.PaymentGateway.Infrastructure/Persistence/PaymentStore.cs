@@ -60,6 +60,20 @@ public sealed class PaymentStore(PaymentGatewayDbContext dbContext)
         return new PaymentSnapshot(payment, attempts);
     }
 
+    public async Task<PaymentSnapshot?> FindByOrderIdAsync(
+        OrderId orderId,
+        CancellationToken cancellationToken)
+    {
+        var paymentId = await dbContext.Payments
+            .AsNoTracking()
+            .Where(payment => payment.OrderId == orderId.Value)
+            .Select(payment => (Guid?)payment.Id)
+            .SingleOrDefaultAsync(cancellationToken);
+        return paymentId is null
+            ? null
+            : await FindByIdAsync(PaymentId.From(paymentId.Value), cancellationToken);
+    }
+
     private static AuthorizationAttempt RestoreAuthorizationAttempt(
         AuthorizationAttemptRecord attempt) => AuthorizationAttempt.Restore(
             AuthorizationAttemptId.From(attempt.Id),

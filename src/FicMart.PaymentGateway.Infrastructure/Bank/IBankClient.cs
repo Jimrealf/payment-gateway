@@ -9,4 +9,8 @@ public interface IBankClient
     Task<BankCaptureResult> CaptureAsync(
         BankCaptureRequest request,
         CancellationToken cancellationToken);
+
+    Task<BankVoidResult> VoidAsync(BankVoidRequest request, CancellationToken cancellationToken);
+
+    Task<BankRefundResult> RefundAsync(BankRefundRequest request, CancellationToken cancellationToken);
 }

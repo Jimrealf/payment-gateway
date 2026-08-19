@@ -80,6 +80,36 @@ services:
       retries: 5
       start_period: 10s
 
+  payment-gateway:
+    build:
+      context: ..
+      dockerfile: docker/payment-gateway/Dockerfile
+    container_name: payment-gateway
+    restart: unless-stopped
+    environment:
+      ASPNETCORE_URLS: http://+:8080
+      ConnectionStrings__PaymentGateway: Host=payment-gateway-postgres;Port=5432;Database=payment_gateway;Username=postgres;Password=postgres
+      Bank__BaseUrl: http://bank-api:8080
+      Bank__TimeoutSeconds: 5
+      Idempotency__FingerprintSecret: ${GATEWAY_FINGERPRINT_SECRET:-local-fingerprint-secret-change-me-0001}
+      FicMartApi__ApiKey: ${FICMART_API_KEY:-local-ficmart-api-key-change-me-0001}
+      Database__ApplyMigrations: "true"
+    ports:
+      - "5080:8080"
+    depends_on:
+      bank-api:
+        condition: service_healthy
+      payment-gateway-postgres:
+        condition: service_healthy
+    networks:
+      - bank-network
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8080/health/ready"]
+      interval: 15s
+      timeout: 5s
+      retries: 5
+      start_period: 20s
+
 networks:
   bank-network:
     driver: bridge

@@ -1,129 +1,125 @@
 # FicMart Payment Gateway
 
-An in-progress payment gateway for FicMart, a fictional e-commerce platform. I am building it in C# on .NET 10 LTS to learn how payment systems handle state transitions, duplicate requests, unreliable external services, and uncertain transaction outcomes.
+FicMart Payment Gateway is a C#/.NET 10 service built to explore the problems behind reliable payment processing. It sits between FicMart and an intentionally unreliable mock bank, keeps its own durable payment records in PostgreSQL, and avoids reporting a false success or failure when the bank response is uncertain.
 
-The gateway will sit between FicMart and a supplied mock bank API. FicMart will send payment requests to the gateway, and the gateway will keep its own payment records while coordinating each operation with the bank.
+## Current Status
 
-## Status
+The complete version-one lifecycle is implemented:
 
-Authorization and capture are implemented end to end. The gateway validates FicMart requests, durably records intent before calling the bank, coordinates duplicate requests through PostgreSQL, retries bounded transient bank failures, and represents uncertain outcomes without reporting a false success or decline.
-
-The next implementation slice is Stage 9: voiding an authorization before capture.
-
-## Current Scope
-
-The completed gateway will support the payment lifecycle used by FicMart:
-
-1. Authorize funds when an order is placed.
-2. Capture an authorization when the order ships.
-3. Void an authorization when an order is cancelled before capture.
-4. Refund a captured payment after a return.
-
-Authorization and capture are complete. Void and refund will be added incrementally after their behavior and failure cases are discussed.
-
-## Requirements
-
-- Docker 20.10 or newer
-- Docker Compose 2.0 or newer
-- .NET 10 SDK for the gateway implementation
-
-## Run the Mock Bank
-
-Start the bank API and its PostgreSQL database from the repository root:
-
-```bash
-docker compose -f docker/docker-compose.yaml up -d --build
+```text
+PendingAuthorization -> Authorized -> Captured -> Refunded
+                              |
+                              +------> Voided
 ```
 
-Check that the bank is healthy:
+The gateway currently supports:
+
+- operation-scoped idempotency for every money-moving request
+- bounded retries for known transient bank failures
+- explicit unknown outcomes for timeouts and lost responses
+- recovery of capture, void, and refund operations after a restart
+- database-enforced protection against capture-versus-void races
+- API-key authentication, correlation IDs, audit history, and metrics
+- Docker-based local setup and automated CI verification
+
+Version one supports USD, full capture, full void, and full refund. Partial operations and customer payment history are out of scope.
+
+## Run With Docker
 
 ```bash
-curl http://localhost:8787/health
+export FICMART_API_KEY='replace-with-at-least-32-characters'
+export GATEWAY_FINGERPRINT_SECRET='replace-with-at-least-32-characters'
+docker compose -f docker/docker-compose.yaml up --build
 ```
 
-The Swagger UI is available at <http://localhost:8787/docs>.
-
-Stop the bank:
+The gateway is at `http://localhost:5080`; the bank is at `http://localhost:8787`.
 
 ```bash
-docker compose -f docker/docker-compose.yaml down
+curl http://localhost:5080/health/live
+curl http://localhost:5080/health/ready
 ```
 
-Run the supplied bank tests while the containers are running:
+Compose enables migrations at startup for one local instance. Production deployments should run migrations as a separate deployment step.
 
-```bash
-docker compose -f docker/docker-compose.yaml exec bank-api sh -c \
-  'go test -v $(go list ./... | grep -v /tests) && go test -v -count=1 -p 1 ./tests/...'
-```
+## Local Development
 
-## Build the Gateway
-
-Restore dependencies and build the solution:
+Requirements: .NET 10 SDK and Docker.
 
 ```bash
 dotnet tool restore
 dotnet restore FicMart.PaymentGateway.slnx
-dotnet build FicMart.PaymentGateway.slnx --no-restore
-```
+docker compose -f docker/docker-compose.yaml up -d postgres bank-api payment-gateway-postgres
+dotnet ef database update --project src/FicMart.PaymentGateway.Infrastructure
 
-Run the tests:
+export FICMART_API_KEY='local-ficmart-api-key-at-least-32-characters'
+export FicMartApi__ApiKey="$FICMART_API_KEY"
+export Idempotency__FingerprintSecret='local-fingerprint-secret-at-least-32-characters'
+export ConnectionStrings__PaymentGateway='Host=localhost;Port=5433;Database=payment_gateway;Username=postgres;Password=postgres'
+export Bank__BaseUrl='http://localhost:8787'
 
-```bash
-dotnet test FicMart.PaymentGateway.slnx --no-build
-```
-
-Check formatting without changing files:
-
-```bash
-dotnet format FicMart.PaymentGateway.slnx --verify-no-changes
-```
-
-Run the gateway locally:
-
-```bash
 dotnet run --project src/FicMart.PaymentGateway.Api --urls http://localhost:5080
 ```
 
-The health endpoint is available at <http://localhost:5080/health>.
+Set `FicMartApi__ApiKey`, `Idempotency__FingerprintSecret`, the gateway connection string, and bank URL using environment variables or user secrets. [`.env.example`](./.env.example) lists the keys. Never commit real secrets.
 
-Authorize a payment with `POST /api/v1/payments/authorize` and capture it with `POST /api/v1/payments/{paymentId}/capture`. Both operations require an `Idempotency-Key` header. See [`.env.example`](./.env.example) for the bank, database, and fingerprint-secret configuration keys.
+## API
 
-Apply the gateway database migration to the configured PostgreSQL database:
+Every `/api/v1` request requires `X-FicMart-Api-Key`. Authorize, capture, void, and refund also require a FicMart-owned `Idempotency-Key`.
+
+| Method | Route | Purpose |
+| --- | --- | --- |
+| `POST` | `/api/v1/payments/authorize` | Authorize funds for an order. |
+| `POST` | `/api/v1/payments/{paymentId}/capture` | Capture an authorized payment. |
+| `POST` | `/api/v1/payments/{paymentId}/void` | Release an authorization before capture. |
+| `POST` | `/api/v1/payments/{paymentId}/refund` | Fully refund a captured payment. |
+| `POST` | `/api/v1/payments/{paymentId}/reconcile` | Retry recovery for an uncertain stored operation. |
+| `GET` | `/api/v1/payments/{paymentId}` | Retrieve the gateway payment record. |
+| `GET` | `/api/v1/payments/by-order/{orderId}` | Retrieve a payment using the FicMart order ID. |
 
 ```bash
-dotnet ef database update \
-  --project src/FicMart.PaymentGateway.Infrastructure
+curl -X POST http://localhost:5080/api/v1/payments/authorize \
+  -H "Content-Type: application/json" \
+  -H "X-FicMart-Api-Key: $FICMART_API_KEY" \
+  -H "Idempotency-Key: order-1001-authorize" \
+  -d '{"orderId":"order-1001","customerId":"customer-20","amountMinorUnits":2500,"currency":"USD","cardNumber":"4111111111111111","cvv":"123"}'
 ```
 
-Local configuration keys are shown in [`.env.example`](./.env.example). Supply them as environment variables or through .NET user secrets; do not commit real credentials.
+The sample card data is for the local mock bank only. PAN and CVV are sent to the bank but never persisted by the gateway.
 
-## Mock Bank Behavior
+Use the returned `paymentId` for later operations:
 
-The mock bank deliberately introduces latency and random server errors. It also enforces operation ordering, uses integer cents for amounts, and requires an `Idempotency-Key` header for every mutating request.
-
-Two implementation details matter for the gateway:
-
-- The running authorization endpoint accepts requests without the expiry fields marked as required by Swagger.
-- The bank caches successful responses by idempotency key and request path, but it does not compare request payloads or guarantee serialization of concurrent first requests.
-
-The gateway will not rely on the bank's idempotency behavior as its only duplicate-request protection.
-
-## Repository Structure
-
-```text
-src/
-  FicMart.PaymentGateway.Api/             Minimal API host
-  FicMart.PaymentGateway.Domain/          payment rules and domain types
-  FicMart.PaymentGateway.Infrastructure/  EF Core and external integrations
-tests/
-  FicMart.PaymentGateway.UnitTests/        domain behavior tests
-  FicMart.PaymentGateway.IntegrationTests/ HTTP and PostgreSQL integration tests
-bank/                                      supplied mock bank API and tests
-docker/                                    local mock bank environment
+```bash
+curl -X POST http://localhost:5080/api/v1/payments/{paymentId}/capture \
+  -H "X-FicMart-Api-Key: $FICMART_API_KEY" \
+  -H "Idempotency-Key: order-1001-capture"
 ```
 
-Payment tables are not seeded by the application. Integration tests create non-sensitive fixtures in disposable PostgreSQL containers so fake financial records never enter a normal runtime database.
+When the bank times out, the gateway returns `202 Accepted` instead of guessing the result. FicMart should wait and query the payment before retrying. Retrying with the same idempotency key reuses the stored bank operation key and cannot intentionally create a second logical operation.
 
-## Project Origin
+## Verify
 
-This project is based on the [payment gateway exercise](https://github.com/benx421/payment-gateway) from the [Backend Engineer Path](https://github.com/benx421/backend-engineer-path).
+```bash
+dotnet build FicMart.PaymentGateway.slnx --no-restore
+dotnet test FicMart.PaymentGateway.slnx --no-build
+dotnet format FicMart.PaymentGateway.slnx --verify-no-changes --no-restore
+dotnet ef migrations has-pending-model-changes \
+  --project src/FicMart.PaymentGateway.Infrastructure \
+  --startup-project src/FicMart.PaymentGateway.Infrastructure --no-build
+```
+
+Integration tests use Testcontainers and require Docker.
+
+The current suite covers domain transitions, PostgreSQL constraints and migrations, duplicate requests, transient failures, unknown-outcome recovery, authentication, full payment lifecycles, and the capture-versus-void race.
+
+## Documentation
+
+- [Architecture](./ARCHITECTURE.md)
+- [Data model](./DATA_MODEL.md)
+- [API design](./API_DESIGN.md)
+- [Security](./SECURITY.md)
+- [Testing](./TESTING.md)
+- [Performance](./PERFORMANCE.md)
+- [Operations](./OPERATIONS.md)
+- [Trade-offs](./TRADEOFFS.md)
+
+This project is based on the [payment gateway exercise](https://github.com/benx421/payment-gateway).

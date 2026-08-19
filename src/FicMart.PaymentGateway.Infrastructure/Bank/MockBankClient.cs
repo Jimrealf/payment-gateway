@@ -110,6 +110,74 @@ public sealed class MockBankClient(HttpClient httpClient) : IBankClient
         }
     }
 
+    public async Task<BankVoidResult> VoidAsync(BankVoidRequest request, CancellationToken cancellationToken)
+    {
+        using var message = new HttpRequestMessage(HttpMethod.Post, "api/v1/voids")
+        {
+            Content = JsonContent.Create(new CreateVoidRequest(request.AuthorizationId.Value)),
+        };
+        message.Headers.Add("Idempotency-Key", request.IdempotencyKey.Value.ToString());
+        try
+        {
+            using var response = await httpClient.SendAsync(message, cancellationToken);
+            if (response.IsSuccessStatusCode)
+            {
+                var body = await response.Content.ReadFromJsonAsync<VoidResponse>(cancellationToken);
+                return body is not null && body.Status == "voided"
+                    ? new BankVoidResult.Voided(BankVoidId.From(body.VoidId))
+                    : new BankVoidResult.Unknown();
+            }
+            return response.StatusCode == HttpStatusCode.InternalServerError
+                ? new BankVoidResult.TransientFailure()
+                : response.StatusCode == HttpStatusCode.BadRequest
+                    ? new BankVoidResult.Rejected()
+                    : new BankVoidResult.Unknown();
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return new BankVoidResult.Unknown();
+        }
+        catch (HttpRequestException)
+        {
+            return new BankVoidResult.Unknown();
+        }
+    }
+
+    public async Task<BankRefundResult> RefundAsync(BankRefundRequest request, CancellationToken cancellationToken)
+    {
+        using var message = new HttpRequestMessage(HttpMethod.Post, "api/v1/refunds")
+        {
+            Content = JsonContent.Create(new CreateRefundRequest(
+                request.CaptureId.Value,
+                request.Amount.MinorUnits)),
+        };
+        message.Headers.Add("Idempotency-Key", request.IdempotencyKey.Value.ToString());
+        try
+        {
+            using var response = await httpClient.SendAsync(message, cancellationToken);
+            if (response.IsSuccessStatusCode)
+            {
+                var body = await response.Content.ReadFromJsonAsync<RefundResponse>(cancellationToken);
+                return body is not null && body.Status == "refunded"
+                    ? new BankRefundResult.Refunded(BankRefundId.From(body.RefundId))
+                    : new BankRefundResult.Unknown();
+            }
+            return response.StatusCode == HttpStatusCode.InternalServerError
+                ? new BankRefundResult.TransientFailure()
+                : response.StatusCode == HttpStatusCode.BadRequest
+                    ? new BankRefundResult.Rejected()
+                    : new BankRefundResult.Unknown();
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            return new BankRefundResult.Unknown();
+        }
+        catch (HttpRequestException)
+        {
+            return new BankRefundResult.Unknown();
+        }
+    }
+
     private static async Task<BankAuthorizationResult> ReadApprovedAsync(
         HttpResponseMessage response,
         CancellationToken cancellationToken)
@@ -172,5 +240,20 @@ public sealed class MockBankClient(HttpClient httpClient) : IBankClient
 
     private sealed record CaptureResponse(
         [property: JsonPropertyName("capture_id")] string CaptureId,
+        [property: JsonPropertyName("status")] string Status);
+
+    private sealed record CreateVoidRequest(
+        [property: JsonPropertyName("authorization_id")] string AuthorizationId);
+
+    private sealed record VoidResponse(
+        [property: JsonPropertyName("void_id")] string VoidId,
+        [property: JsonPropertyName("status")] string Status);
+
+    private sealed record CreateRefundRequest(
+        [property: JsonPropertyName("capture_id")] string CaptureId,
+        [property: JsonPropertyName("amount")] long Amount);
+
+    private sealed record RefundResponse(
+        [property: JsonPropertyName("refund_id")] string RefundId,
         [property: JsonPropertyName("status")] string Status);
 }

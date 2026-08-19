@@ -1,0 +1,29 @@
+name: Gateway CI
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'src/**'
+      - 'tests/**'
+      - 'Directory.Build.props'
+      - 'FicMart.PaymentGateway.slnx'
+      - '.github/workflows/gateway-ci.yaml'
+  pull_request:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: '10.0.302'
+      - run: dotnet tool restore
+      - run: dotnet restore FicMart.PaymentGateway.slnx
+      - run: dotnet build FicMart.PaymentGateway.slnx --no-restore --configuration Release
+      - run: dotnet format FicMart.PaymentGateway.slnx --verify-no-changes --no-restore
+      - run: dotnet test FicMart.PaymentGateway.slnx --no-build --configuration Release
+      - name: Verify migration model
+        run: dotnet ef migrations has-pending-model-changes --project src/FicMart.PaymentGateway.Infrastructure --startup-project src/FicMart.PaymentGateway.Infrastructure --configuration Release --no-build

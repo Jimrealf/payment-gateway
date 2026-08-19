@@ -14,7 +14,7 @@ internal sealed class IdempotencyRecordConfiguration : IEntityTypeConfiguration<
             {
                 table.HasCheckConstraint(
                     "ck_idempotency_records_operation",
-                    "operation IN ('Authorize', 'Capture')");
+                    "operation IN ('Authorize', 'Capture', 'Void', 'Refund')");
                 table.HasCheckConstraint(
                     "ck_idempotency_records_state",
                     "state IN ('Processing', 'Retryable', 'Completed')");

@@ -18,6 +18,8 @@ public sealed class HealthEndpointTests
                     {
                         ["Idempotency:FingerprintSecret"] =
                             "integration-test-secret-at-least-32-characters",
+                        ["FicMartApi:ApiKey"] =
+                            "integration-test-api-key-at-least-32-characters",
                     })));
         using var client = application.CreateClient();
 

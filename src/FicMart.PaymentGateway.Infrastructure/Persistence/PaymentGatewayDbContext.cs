@@ -13,6 +13,10 @@ public sealed class PaymentGatewayDbContext(DbContextOptions<PaymentGatewayDbCon
     internal DbSet<CaptureAttemptRecord> CaptureAttempts => Set<CaptureAttemptRecord>();
 
     internal DbSet<IdempotencyRecord> IdempotencyRecords => Set<IdempotencyRecord>();
+    internal DbSet<VoidAttemptRecord> VoidAttempts => Set<VoidAttemptRecord>();
+    internal DbSet<RefundAttemptRecord> RefundAttempts => Set<RefundAttemptRecord>();
+    internal DbSet<ReconciliationRecord> ReconciliationRecords => Set<ReconciliationRecord>();
+    internal DbSet<AuditRecord> AuditRecords => Set<AuditRecord>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder) =>
         modelBuilder.ApplyConfigurationsFromAssembly(typeof(PaymentGatewayDbContext).Assembly);
